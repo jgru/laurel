@@ -5,13 +5,14 @@ use std::ops::Range;
 use indexmap::IndexMap;
 
 use serde::{Serialize,Serializer};
-use serde::ser::{SerializeSeq,SerializeMap};
+use serde::ser::{SerializeMap};
 
 use crate::constants::msg_type::*;
 use crate::proc::{ProcTable,get_environ};
 use crate::types::*;
 use crate::parser::parse;
 use crate::quoted_string::ToQuotedString;
+
 
 /// Collect records in [`EventBody`] context as single or multiple
 /// instances.
@@ -20,8 +21,9 @@ use crate::quoted_string::ToQuotedString;
 /// latter can be split across multiple lines). An example for
 /// multiple instances is `PATH`.
 ///
-/// "Multi" records are serialized as list-of-maps (`[ { "key":
-/// "value", … }, { "key": "value", … } … ]`)
+/// "Multi" records are serialized as a map-of-maps (`{ "name": { "key":
+/// "value", … }, { "key": "value", … } … }`) where the path-name serves
+/// as root key for the map representing the `PATH` message
 #[derive(Debug,Clone)]
 pub enum EventValues {
     // e.g SYSCALL, EXECVE
@@ -30,6 +32,8 @@ pub enum EventValues {
     Multi(Vec<Record>),
 }
 
+const PATH_NAME_KEY: &str  = "name";
+
 impl Serialize for EventValues {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where S: Serializer
@@ -37,11 +41,22 @@ impl Serialize for EventValues {
         match self {
             EventValues::Single(rv) => rv.serialize(serializer),
             EventValues::Multi(rvs) => {
-                let mut seq = serializer.serialize_seq(Some(rvs.len()))?;
+                let mut map = serializer.serialize_map(Some(rvs.len()))?;
                 for rv in rvs {
-                    seq.serialize_element(rv)?;
+                    for (k,v) in rv {
+                        if &k.to_string() == PATH_NAME_KEY {
+                            match v.value {
+                                Value::Str(r,_) => {
+                                    map.serialize_key(&String::from_utf8_lossy(&v.raw[r.clone()]))?;
+                                    map.serialize_value(&rv)?;
+                                },
+                                // Discard, if PATH does not contain a name specified as Str
+                                _ => {}
+                            };
+                        }
+                    }
                 }
-                seq.end()
+                map.end()
             }
         }
     }
